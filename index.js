@@ -417,6 +417,39 @@ discord.on("messageCreate", async (message) => {
     `[${message.channel.name}] 收到消息：${message.author.tag}：${content.slice(0, 100)}${content.length > 100 ? "..." : ""}`
   );
 
+  /**
+   * 敏感词检测：联系方式请求
+   * 这类消息代表高意向客户，必须人工介入，优先级 P0
+   */
+  const contactKeywords = [
+    /(?:dm|私信|私聊)\s*(?:我)?/i,           // "dm我", "私信我", "私聊"
+    /加我\s*(?:微信|好友|line|qq|电报)?/i,   // "加我", "加我微信"
+    /联系我|找我|发邮件给我|reach\s*out/i,   // "联系我", "找我"
+    /(?:我的|添加我的?)\s*(?:微信|line|telegram|tg)/i,  // "我的微信", "添加我的微信"
+  ];
+
+  const isContactRequest = contactKeywords.some(pattern => pattern.test(content));
+
+  if (isContactRequest) {
+    console.log("[关键词触发] 检测到联系方式请求，强制推送钉钉（高优先级）");
+
+    await notifyDingTalk({
+      classification: {
+        category: "contact_request",
+        severity: "high",
+        title: "用户要求私下联系（需人工介入）",
+        summary: content,
+        should_notify: true,
+        should_create_ticket: false,  // 不创建工单，但需要人工处理
+      },
+      discordMessage: message,
+      issue: null,
+    });
+
+    console.log("已同步到钉钉 [contact_request]");
+    return; // 跳过后续 AI 分类，直接处理完毕
+  }
+
   try {
     const classification =
       await classifyMessage(content);
