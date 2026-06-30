@@ -407,6 +407,22 @@ discord.once("ready", () => {
 });
 
 /**
+ * 例外用户 ID：这些用户的消息始终处理（即使他们是管理员）
+ */
+const EXCEPTION_USER_IDS = new Set([
+  "1521030281597943879", // 特定用户始终处理
+]);
+
+/**
+ * 管理员角色列表
+ */
+const STAFF_ROLE_NAMES = [
+  'Admin', 'Administrator', 'Moderator', 'Mod',
+  'Staff', 'Team', 'Support', 'Helper',
+  '管理员', '版主', '工作人员'
+];
+
+/**
  * 监听 Discord 消息
  */
 discord.on("messageCreate", async (message) => {
@@ -415,22 +431,27 @@ discord.on("messageCreate", async (message) => {
 
   // 检查是否在监听的频道列表中
   if (!CHANNEL_IDS.has(message.channel.id)) {
-    // 可选：调试时取消注释下面这行
-    // console.log(`[跳过] 频道不在监听列表: ${message.channel.name} (${message.channel.id})`);
     return;
   }
 
-  // 检查用户角色：管理员/版主的消息不处理（内部回复）
-  const member = message.member;
-  if (member) {
-    const isStaff = member.roles.cache.some(role =>
-      ['Admin', 'Administrator', 'Moderator', 'Mod', 'Staff', 'Team', '管理员', '版主'].includes(role.name)
-    );
+  const userId = message.author.id;
+  const isExceptionUser = EXCEPTION_USER_IDS.has(userId);
 
-    if (isStaff) {
-      console.log(`[跳过] 管理员/版主消息: ${message.author.tag}`);
-      return;
+  // 检查用户角色：管理员/版主的消息不处理（内部回复），但例外用户除外
+  if (!isExceptionUser) {
+    const member = message.member;
+    if (member) {
+      const isStaff = member.roles.cache.some(role =>
+        STAFF_ROLE_NAMES.includes(role.name)
+      );
+
+      if (isStaff) {
+        console.log(`[RAILWAY-LOG] 跳过管理员消息 | 用户: ${message.author.tag} | ID: ${userId} | 角色: ${member.roles.cache.map(r => r.name).join(', ')}`);
+        return;
+      }
     }
+  } else {
+    console.log(`[RAILWAY-LOG] 例外用户处理 | 用户: ${message.author.tag} | ID: ${userId}（尽管可能是管理员，仍强制处理）`);
   }
 
   const content = message.content.trim();
