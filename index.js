@@ -4,13 +4,10 @@ const crypto = require("crypto");
 const axios = require("axios");
 const OpenAI = require("openai");
 const { Octokit } = require("@octokit/rest");
-const {
-  Client,
-  GatewayIntentBits,
-} = require("discord.js");
+const { Client, GatewayIntentBits } = require("discord.js");
 
 /**
- * 检查必要的环境变量
+ * 必要环境变量检查
  */
 const requiredEnv = [
   "DISCORD_TOKEN",
@@ -24,12 +21,12 @@ const requiredEnv = [
 
 for (const key of requiredEnv) {
   if (!process.env[key]) {
-    throw new Error(`缺少环境变量：${key}`);
+    throw new Error(`Missing environment variable: ${key}`);
   }
 }
 
 /**
- * 解析监听的 Discord 频道列表（支持多个，逗号分隔）
+ * 解析监听频道列表（多频道）
  */
 const CHANNEL_IDS = new Set(
   (process.env.DISCORD_CHANNEL_IDS || process.env.DISCORD_FAQ_CHANNEL_ID || "")
@@ -39,378 +36,16 @@ const CHANNEL_IDS = new Set(
 );
 
 if (CHANNEL_IDS.size === 0) {
-  throw new Error(
-    "请配置 DISCORD_CHANNEL_IDS 环境变量，例如：123456789,987654321"
-  );
+  throw new Error("Please configure DISCORD_CHANNEL_IDS, e.g.: 123,456,789");
 }
 
-console.log(`[启动] 监听 ${CHANNEL_IDS.size} 个频道`);
+console.log(`[Start] Monitoring ${CHANNEL_IDS.size} channels`);
 
 /**
- * 智谱 AI 客户端
- * 使用 OpenAI 兼容接口
- */
-const aiClient = new OpenAI({
-  apiKey: process.env.ZHIPU_API_KEY,
-  baseURL: "https://open.bigmodel.cn/api/paas/v4/",
-});
-
-/**
- * GitHub 客户端
- */
-const github = new Octokit({
-  auth: process.env.GITHUB_TOKEN,
-});
-
-/**
- * Discord 客户端
- */
-const discord = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
-
-/**
- * 从 AI 返回内容中解析 JSON
- */
-function safeJsonParse(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const match = text.match(/\{[\s\S]*\}/);
-
-    if (!match) {
-      throw new Error(`AI 没有返回合法 JSON：${text}`);
-    }
-
-    return JSON.parse(match[0]);
-  }
-}
-
-/**
- * 校验 AI 分类结果
- */
-function validateClassification(result) {
-  const validCategories = [
-    "bug",
-    "feature_request",
-    "question",
-    "complaint",
-    "account",
-    "payment",
-    "noise",
-  ];
-
-  const validSeverities = [
-    "low",
-    "medium",
-    "high",
-    "critical",
-  ];
-
-  if (!validCategories.includes(result.category)) {
-    throw new Error(`AI 返回了无效分类：${result.category}`);
-  }
-
-  if (!validSeverities.includes(result.severity)) {
-    throw new Error(`AI 返回了无效严重程度：${result.severity}`);
-  }
-
-  if (!result.title || typeof result.title !== "string") {
-    throw new Error("AI 未返回有效工单标题");
-  }
-
-  if (!result.summary || typeof result.summary !== "string") {
-    throw new Error("AI 未返回有效摘要");
-  }
-
-  return {
-    category: result.category,
-    severity: result.severity,
-    title: result.title.trim(),
-    summary: result.summary.trim(),
-    should_notify: result.should_notify === true,
-    should_create_ticket:
-      result.should_create_ticket === true,
-  };
-}
-
-/**
- * 调用智谱 AI 对 Discord 消息进行分类
- */
-async function classifyMessage(messageText) {
-  const response = await aiClient.chat.completions.create({
-    model: process.env.ZHIPU_MODEL,
-    temperature: 0.1,
-    messages: [
-      {
-        role: "system",
-        content: `
-You are a user feedback classifier for a software product.
-
-Classify Discord user messages into one of these categories:
-
-- bug
-- feature_request
-- question
-- complaint
-- account
-- payment
-- noise
-
-Severity levels (only these):
-
-- low
-- medium
-- high
-- critical
-
-Classification rules:
-
-1. Bug: Software errors, crashes, failures, or inability to use features.
-2. Feature Request: Explicit requests for new features or improvements.
-3. Question: Asking how to use the product.
-4. Complaint: Expressing dissatisfaction without specific technical failures.
-5. Account: Login issues, authentication, permissions, verification codes.
-6. Payment: Billing, subscriptions, refunds, payment failures.
-7. Noise: Chitchat, emojis, test messages, meaningless content.
-
-Severity guidelines:
-
-- low: Minor impact, workarounds available.
-- medium: Affects normal use but not completely blocking.
-- high: Core features unavailable, significant impact.
-- critical: Data loss, security issues, widespread service outage.
-
-Ticket creation rules (GitHub Issue):
-
-- bug: CREATE
-- feature_request: CREATE
-- account: CREATE
-- payment: CREATE
-- complaint: CREATE only if medium/high/critical
-- question: DO NOT create
-- noise: DO NOT create
-
-DingTalk notification rules:
-
-- noise: DO NOT notify
-- contact_request: NOTIFY (handled separately before this classification)
-- all others: NOTIFY
-
-Output format:
-Return only valid JSON. Do not use markdown code blocks. No explanations.
-
-Example response:
-{
-  "category": "bug",
-  "severity": "high",
-  "title": "Short English summary for GitHub issue title",
-  "summary": "One sentence summarizing the user feedback",
-  "should_notify": true,
-  "should_create_ticket": true
-}
-
-返回格式：
-
-{
-  "category": "bug",
-  "severity": "high",
-  "title": "适合作为 GitHub Issue 标题的中文摘要",
-  "summary": "用中文概括用户反馈",
-  "should_notify": true,
-  "should_create_ticket": true
-}
-        `.trim(),
-      },
-      {
-        role: "user",
-        content: messageText,
-      },
-    ],
-  });
-
-  const content = response.choices[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("智谱 AI 未返回分类结果");
-  }
-
-  const parsed = safeJsonParse(content);
-
-  return validateClassification(parsed);
-}
-
-/**
- * 创建 GitHub Issue
- */
-async function createGithubIssue({
-  classification,
-  discordMessage,
-}) {
-  const labelMap = {
-    bug: "bug",
-    feature_request: "enhancement",
-    question: "question",
-    complaint: "complaint",
-    account: "account",
-    payment: "payment",
-  };
-
-  const labels = [];
-
-  if (labelMap[classification.category]) {
-    labels.push(labelMap[classification.category]);
-  }
-
-  labels.push(`severity:${classification.severity}`);
-
-  const body = `
-## AI 分类
-
-- 类型：${classification.category}
-- 严重程度：${classification.severity}
-- 摘要：${classification.summary}
-
-## Discord 来源
-
-- 用户：${discordMessage.author.tag}
-- 用户 ID：${discordMessage.author.id}
-- 频道：#${discordMessage.channel.name}
-- 时间：${discordMessage.createdAt.toISOString()}
-- 原消息链接：${discordMessage.url}
-
-## 原始消息
-
-> ${discordMessage.content.replace(/\n/g, "\n> ")}
-  `.trim();
-
-  const issueParams = {
-    owner: process.env.GITHUB_OWNER,
-    repo: process.env.GITHUB_REPO,
-    title: `[${classification.category}][${classification.severity}] ${classification.title}`,
-    body,
-  };
-
-  try {
-    const result = await github.issues.create({
-      ...issueParams,
-      labels,
-    });
-
-    return result.data;
-  } catch (error) {
-    console.warn(
-      "带标签创建 Issue 失败，将尝试不带标签创建：",
-      error.message
-    );
-
-    const fallback = await github.issues.create(issueParams);
-
-    return fallback.data;
-  }
-}
-
-/**
- * 构建钉钉加签 Webhook 地址
- */
-function buildSignedDingTalkUrl() {
-  const webhook = process.env.DINGTALK_WEBHOOK;
-  const secret = process.env.DINGTALK_SECRET;
-
-  if (!secret) {
-    return webhook;
-  }
-
-  const timestamp = Date.now();
-  const stringToSign = `${timestamp}\n${secret}`;
-
-  const sign = crypto
-    .createHmac("sha256", secret)
-    .update(stringToSign)
-    .digest("base64");
-
-  const separator = webhook.includes("?") ? "&" : "?";
-
-  return `${webhook}${separator}timestamp=${timestamp}&sign=${encodeURIComponent(
-    sign
-  )}`;
-}
-
-/**
- * 发送钉钉通知
- */
-async function notifyDingTalk({
-  classification,
-  discordMessage,
-  issue,
-}) {
-  const issueText = issue
-    ? `GitHub 工单：#${issue.number}\n${issue.html_url}`
-    : "GitHub 工单：未创建";
-
-  const text = `
-【Discord 用户反馈】
-
-类型：${classification.category}
-严重程度：${classification.severity}
-用户：${discordMessage.author.tag}
-
-摘要：
-${classification.summary}
-
-原始消息：
-${discordMessage.content}
-
-${issueText}
-
-Discord 原消息：
-${discordMessage.url}
-  `.trim();
-
-  const response = await axios.post(
-    buildSignedDingTalkUrl(),
-    {
-      msgtype: "text",
-      text: {
-        content: text,
-      },
-    },
-    {
-      timeout: 10000,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    }
-  );
-
-  console.log("钉钉返回结果：", response.data);
-
-  if (response.data?.errcode !== 0) {
-    throw new Error(
-      `钉钉发送失败：${response.data?.errcode} ${response.data?.errmsg}`
-    );
-  }
-
-  return response.data;
-}
-
-/**
- * Discord Bot 上线
- */
-discord.once("ready", () => {
-  console.log(`Discord Bot 已上线：${discord.user.tag}`);
-  console.log(`正在监听 ${CHANNEL_IDS.size} 个频道：`, [...CHANNEL_IDS]);
-});
-
-/**
- * 例外用户 ID：这些用户的消息始终处理（即使他们是管理员）
+ * 例外用户列表（始终处理，即使管理员）
  */
 const EXCEPTION_USER_IDS = new Set([
-  "1521030281597943879", // 特定用户始终处理
+  "1521030281597943879",
 ]);
 
 /**
@@ -423,161 +58,519 @@ const STAFF_ROLE_NAMES = [
 ];
 
 /**
- * 监听 Discord 消息
+ * P0 关键词矩阵（代码层强匹配）
  */
-discord.on("messageCreate", async (message) => {
-  // 忽略机器人消息，防止循环
-  if (message.author.bot) return;
+const P0_KEYWORDS = {
+  // 联系方式请求 - 高意向客户，人工介入
+  contact: [
+    /\bdm\b/i,
+    /\bpm\b/i,
+    /\bmessage\s*me\b/i,
+    /\bcontact\s*me\b/i,
+    /\breach\s*out\b/i,
+    /\bping\s*me\b/i,
+    /\bslide\s*into\s*my\s*dms?\b/i,
+    /\badd\s*me\s*on\b/i,
+    /\bemail\s*me\b/i,
+    /\btext\s*me\b/i,
+    /\bcall\s*me\b/i,
+    /\blet['']?s\s+(move|take)\s+this\s+private\b/i,
+    /\bmy\s+(discord|telegram|tg|whatsapp|email|line)\s+is\b/i,
+  ],
 
-  // 检查是否在监听的频道列表中
-  if (!CHANNEL_IDS.has(message.channel.id)) {
-    return;
+  // 支付/资金问题 - 必须立即处理
+  payment: [
+    /\brefund\b/i,
+    /\bdidn['']?t\s+receive\b/i,
+    /\bcharge(d)?\s+twice\b/i,
+    /\bdouble\s+charge\b/i,
+    /\bovercharge\b/i,
+    /\bpayment\s+failed\b/i,
+    /\bmoney\s+gone\b/i,
+    /\bfund(s)?\s+missing\b/i,
+    /\bwithdraw(al)?\s+stuck\b/i,
+    /\bstuck\s+in\s+pending\b/i,
+  ],
+
+  // 账号安全 - 必须立即处理
+  account: [
+    /\baccount\s+locked\b/i,
+    /\baccount\s+hacked\b/i,
+    /\bunauthorized\s+access\b/i,
+    /\bsomeone\s+else\s+using\b/i,
+    /\bcan['']?t\s+login\s*anymore\b/i,
+    /\baccount\s+suspended\b/i,
+    /\baccount\s+banned\b/i,
+  ],
+
+  // 崩溃/阻断性故障
+  crash: [
+    /\bapp\s+crashed\b/i,
+    /\bdata\s+lost\b/i,
+    /\bcan['']?t\s+access\b/i,
+    /\bservice\s+down\b/i,
+    /\bblank\s+screen\b/i,
+    /\bfrozen\b/i,
+    /\bstuck\s+loading\b/i,
+    /\bcritical\s+error\b/i,
+  ],
+};
+
+/**
+ * 检测 P0 关键词
+ */
+function detectP0Keywords(content) {
+  for (const [type, patterns] of Object.entries(P0_KEYWORDS)) {
+    if (patterns.some(p => p.test(content))) {
+      return {
+        priority: 'P0',
+        type,
+        skipAI: true
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * AI 分类后的优先级映射矩阵
+ */
+function mapToPriority(category, severity) {
+  const matrix = {
+    contact_request: { any: 'P0' },
+    payment: { any: 'P0' },
+    crash: { any: 'P0' },
+    bug: {
+      critical: 'P0',
+      high: 'P1',
+      medium: 'P2',
+      low: 'P2'
+    },
+    account: {
+      critical: 'P0',
+      high: 'P0',
+      medium: 'P1',
+      low: 'P1'
+    },
+    complaint: {
+      critical: 'P0',
+      high: 'P1',
+      medium: 'P1',
+      low: 'P2'
+    },
+    feature_request: { any: 'P2' },
+    question: { any: 'P3' },
+    noise: { any: 'No' }
+  };
+
+  const map = matrix[category];
+  if (!map) return 'P2';
+
+  return map[severity] || map.any || 'P2';
+}
+
+/**
+ * 根据优先级执行动作配置
+ */
+function getPriorityConfig(priority, classification) {
+  const configs = {
+    P0: {
+      notify: true,
+      dingPrefix: '🚨【P0紧急】',
+      createTicket: classification?.category !== 'contact_request',
+      log: '🚨 P0'
+    },
+    P1: {
+      notify: true,
+      dingPrefix: '⚠️【P1高优】',
+      createTicket: true,
+      log: '⚠️ P1'
+    },
+    P2: {
+      notify: true,
+      dingPrefix: '【P2普通】',
+      createTicket: false,
+      log: 'P2'
+    },
+    P3: {
+      notify: true,
+      dingPrefix: '【P3汇总】',
+      createTicket: false,
+      log: 'P3'
+    },
+    No: {
+      notify: false,
+      log: 'Noise (dropped)'
+    }
+  };
+
+  return configs[priority] || configs.P2;
+}
+
+/**
+ * 初始化客户端
+ */
+const aiClient = new OpenAI({
+  apiKey: process.env.ZHIPU_API_KEY,
+  baseURL: "https://open.bigmodel.cn/api/paas/v4/",
+});
+
+const github = new Octokit({
+  auth: process.env.GITHUB_TOKEN,
+});
+
+const discord = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+/**
+ * JSON 安全解析
+ */
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) {
+      throw new Error(`AI returned invalid JSON: ${text}`);
+    }
+    return JSON.parse(match[0]);
+  }
+}
+
+/**
+ * 校验 AI 分类结果
+ */
+function validateClassification(result) {
+  const validCategories = [
+    "bug", "feature_request", "question", "complaint",
+    "account", "payment", "crash", "contact_request", "noise"
+  ];
+
+  const validSeverities = ["low", "medium", "high", "critical"];
+
+  if (!validCategories.includes(result.category)) {
+    result.category = "question";
   }
 
+  if (!validSeverities.includes(result.severity)) {
+    result.severity = "medium";
+  }
+
+  return {
+    category: result.category,
+    severity: result.severity,
+    title: (result.title || "用户反馈").trim().slice(0, 100),
+    summary: (result.summary || result.title || "").trim().slice(0, 500),
+    should_notify: result.should_notify !== false,
+    should_create_ticket: result.should_create_ticket === true,
+  };
+}
+
+/**
+ * AI 分类消息（含 P0 兜底）
+ */
+async function classifyMessage(messageText) {
+  const response = await aiClient.chat.completions.create({
+    model: process.env.ZHIPU_MODEL,
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: `You are a feedback classifier for a software product.
+
+PRIORITY RULES (Critical):
+Messages requesting private/off-platform contact are ALWAYS high priority:
+- Contains: dm, pm, email, contact, message, reach out, ping me, let's talk, chat privately, add me on, follow up
+- User shares contact: "my discord is", "email me at"
+- User asks for YOUR contact info
+→ Classify as: category="contact_request", severity="high"
+
+Categories:
+- crash: App crashes, data loss, service down (severity: critical/high)
+- payment: Billing, refunds, double charges, stuck withdrawals (severity: any)
+- account: Login issues, hacks, locks, unauthorized access (severity: high/critical)
+- bug: Software errors, failures (severity based on impact)
+- complaint: Dissatisfaction (severity based on tone)
+- feature_request: New features (severity: any)
+- question: How-to (severity: any)
+- contact_request: Private contact requests (severity: high)
+- noise: Spam, emojis, tests
+
+Return JSON:
+{
+  "category": "string",
+  "severity": "low|medium|high|critical",
+  "title": "English summary for GitHub issue title",
+  "summary": "One sentence summary",
+  "should_notify": true,
+  "should_create_ticket": true
+}`.trim()
+      },
+      { role: "user", content: messageText.slice(0, 2000) },
+    ]
+  });
+
+  let content = response.choices[0]?.message?.content;
+  if (!content) {
+    throw new Error("AI returned no content");
+  }
+
+  let parsed = safeJsonParse(content);
+
+  // P0 兜底：含 contact 关键词但 AI 没判对
+  if (/\b(dm|pm|email|contact|message me|ping me)\b/i.test(messageText) &&
+      (parsed.category === 'noise' || parsed.category === 'question')) {
+    console.log("[P0 Override] Contact keywords detected, forcing contact_request");
+    parsed = {
+      category: "contact_request",
+      severity: "high",
+      title: "Contact request detected",
+      summary: parsed.summary || messageText.slice(0, 100),
+      should_notify: true,
+      should_create_ticket: false,
+      _ai_corrected: true
+    };
+  }
+
+  // P0 兜底：支付/账号关键词
+  const hasPayment = /\b(refund|charge|payment|money missing|withdraw)\b/i.test(messageText);
+  const hasAccount = /\b(hacked|locked|unauthorized|can't login|suspended)\b/i.test(messageText);
+
+  if (hasPayment && parsed.category !== 'payment') {
+    parsed.category = 'payment';
+    parsed.severity = 'high';
+  }
+  if (hasAccount && parsed.category !== 'account') {
+    parsed.category = 'account';
+    parsed.severity = 'high';
+  }
+
+  return validateClassification(parsed);
+}
+
+/**
+ * 创建 GitHub Issue
+ */
+async function createGithubIssue({ classification, discordMessage }) {
+  const labelMap = {
+    bug: "bug",
+    crash: "crash",
+    payment: "payment",
+    account: "account",
+    feature_request: "enhancement",
+    question: "question",
+    complaint: "complaint",
+    contact_request: "contact-request",
+  };
+
+  const labels = [];
+  if (labelMap[classification.category]) {
+    labels.push(labelMap[classification.category]);
+  }
+  if (classification.severity) {
+    labels.push(`priority:${classification.severity}`);
+  }
+
+  const body = `## AI Classification
+- Type: ${classification.category}
+- Severity: ${classification.severity}
+- Summary: ${classification.summary}
+
+## Source
+- User: ${discordMessage.author.tag}
+- User ID: ${discordMessage.author.id}
+- Channel: #${discordMessage.channel.name}
+- Time: ${discordMessage.createdAt.toISOString()}
+- URL: ${discordMessage.url}
+
+## Original Message
+> ${discordMessage.content.replace(/\n/g, "\n> ")}
+`.trim();
+
+  try {
+    const result = await github.issues.create({
+      owner: process.env.GITHUB_OWNER,
+      repo: process.env.GITHUB_REPO,
+      title: `[${classification.category}][${classification.severity}] ${classification.title}`,
+      body,
+      labels,
+    });
+    return result.data;
+  } catch (error) {
+    console.warn("GitHub issue creation failed, retrying without labels:", error.message);
+    const fallback = await github.issues.create({
+      owner: process.env.GITHUB_OWNER,
+      repo: process.env.GITHUB_REPO,
+      title: `[${classification.category}][${classification.severity}] ${classification.title}`,
+      body,
+    });
+    return fallback.data;
+  }
+}
+
+/**
+ * 钉钉加签 URL
+ */
+function buildSignedDingTalkUrl() {
+  const webhook = process.env.DINGTALK_WEBHOOK;
+  const secret = process.env.DINGTALK_SECRET;
+
+  if (!secret) return webhook;
+
+  const timestamp = Date.now();
+  const sign = crypto.createHmac("sha256", secret)
+    .update(`${timestamp}\n${secret}`)
+    .digest("base64");
+
+  const sep = webhook.includes("?") ? "&" : "?";
+  return `${webhook}${sep}timestamp=${timestamp}&sign=${encodeURIComponent(sign)}`;
+}
+
+/**
+ * 钉钉通知（带优先级前缀）
+ */
+async function notifyDingTalk({ priority, classification, discordMessage, issue }) {
+  const prefix = priority === 'P0' ? '🚨【P0紧急】' :
+                 priority === 'P1' ? '⚠️【P1高优】' :
+                 priority === 'P2' ? '【P2普通】' :
+                 priority === 'P3' ? '【P3汇总】' : '';
+
+  const issueText = issue
+    ? `GitHub: #${issue.number} ${issue.html_url}`
+    : "Ticket: Not created";
+
+  const text = `
+${prefix} ${classification.category.toUpperCase()}
+
+Severity: ${classification.severity}
+User: ${discordMessage.author.tag}
+Channel: #${discordMessage.channel.name}
+
+Summary:
+${classification.summary}
+
+Original:
+${discordMessage.content.slice(0, 200)}${discordMessage.content.length > 200 ? "..." : ""}
+
+${issueText}
+
+Source: ${discordMessage.url}
+  `.trim();
+
+  const response = await axios.post(
+    buildSignedDingTalkUrl(),
+    { msgtype: "text", text: { content: text } },
+    { timeout: 10000, headers: { "Content-Type": "application/json" } }
+  );
+
+  if (response.data?.errcode !== 0) {
+    throw new Error(`DingTalk error: ${response.data?.errmsg}`);
+  }
+  return response.data;
+}
+
+/**
+ * Discord Bot 启动
+ */
+discord.once("ready", () => {
+  console.log(`Discord Bot ready: ${discord.user.tag}`);
+  console.log(`Monitoring ${CHANNEL_IDS.size} channels:`, [...CHANNEL_IDS]);
+});
+
+/**
+ * 消息处理主逻辑
+ */
+discord.on("messageCreate", async (message) => {
+  // 忽略机器人
+  if (message.author.bot) return;
+
+  // 频道过滤
+  if (!CHANNEL_IDS.has(message.channel.id)) return;
+
   const userId = message.author.id;
-  const isExceptionUser = EXCEPTION_USER_IDS.has(userId);
+  const isException = EXCEPTION_USER_IDS.has(userId);
 
-  // 检查用户角色：管理员/版主的消息不处理（内部回复），但例外用户除外
-  if (!isExceptionUser) {
+  // 管理员过滤（例外用户除外）
+  if (!isException) {
     const member = message.member;
-    if (member) {
-      const isStaff = member.roles.cache.some(role =>
-        STAFF_ROLE_NAMES.includes(role.name)
-      );
-
-      if (isStaff) {
-        console.log(`[RAILWAY-LOG] 跳过管理员消息 | 用户: ${message.author.tag} | ID: ${userId} | 角色: ${member.roles.cache.map(r => r.name).join(', ')}`);
-        return;
-      }
+    if (member?.roles.cache.some(r => STAFF_ROLE_NAMES.includes(r.name))) {
+      console.log(`[Skip] Staff message | ${message.author.tag} | ${userId}`);
+      return;
     }
   } else {
-    console.log(`[RAILWAY-LOG] 例外用户处理 | 用户: ${message.author.tag} | ID: ${userId}（尽管可能是管理员，仍强制处理）`);
+    console.log(`[Override] Exception user | ${message.author.tag} | ${userId}`);
   }
 
   const content = message.content.trim();
-
-  // 忽略空消息
   if (!content) return;
 
-  console.log(
-    `[${message.channel.name}] 收到消息：${message.author.tag}：${content.slice(0, 100)}${content.length > 100 ? "..." : ""}`
-  );
-
-  /**
-   * Keyword detection: contact requests
-   * These indicate high-intent customers requiring human attention, P0 priority
-   */
-  /**
-   * 关键词检测：只要包含 "dm"（不区分大小写，单词边界）
-   * 匹配：DM me, check dm, please DM, my dm, 等等
-   */
-  const hasDM = /\bdm\b/i.test(content);
-
-
-  if (hasDM) {
-    console.log("[关键词匹配] 检测到联系方式请求，强制推送钉钉（P0 高优先级）");
-
-    await notifyDingTalk({
-      classification: {
-        category: "contact_request",
-        severity: "high",
-        title: "🔥 用户要求私下联系（需人工立即介入）",
-        summary: content,
-        should_notify: true,
-        should_create_ticket: false,  // 人工处理优先于 GitHub Issue
-      },
-      discordMessage: message,
-      issue: null,
-    });
-
-    console.log("已同步到钉钉 [contact_request]");
-    return; // 跳过 AI 分类，避免误判为 noise
-  }
+  console.log(`[${message.channel.name}] ${message.author.tag}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
 
   try {
-    const classification =
-      await classifyMessage(content);
-
-    console.log("AI 分类结果：", classification);
-
+    let classification;
     let issue = null;
+    let priority;
 
-    if (classification.should_create_ticket) {
-      issue = await createGithubIssue({
-        classification,
-        discordMessage: message,
-      });
+    // ========== 第一层：P0 关键词强匹配 ==========
+    const p0Result = detectP0Keywords(content);
 
-      console.log(
-        `已创建 GitHub Issue：${issue.html_url}`
-      );
-    }
+    if (p0Result) {
+      console.log(`[P0 Keyword Detected] Type: ${p0Result.type}`);
 
-    if (classification.should_notify) {
-      await notifyDingTalk({
-        classification,
-        discordMessage: message,
-        issue,
-      });
+      priority = 'P0';
+      classification = {
+        category: p0Result.type,
+        severity: 'high',
+        title: p0Result.type === 'contact' ? 'Contact request (P0)' :
+               p0Result.type === 'payment' ? 'Payment issue (P0)' :
+               p0Result.type === 'account' ? 'Account security (P0)' :
+               'Critical issue (P0)',
+        summary: content.slice(0, 100),
+        should_notify: true,
+        should_create_ticket: p0Result.type !== 'contact'
+      };
 
-      console.log("已同步到钉钉");
     } else {
-      console.log("该消息无需同步到钉钉");
+      // ========== 第二层：AI 分类 ==========
+      classification = await classifyMessage(content);
+
+      // ========== 第三层：映射优先级 ==========
+      priority = mapToPriority(classification.category, classification.severity);
+
+      console.log(`[AI Result] ${classification.category} | ${classification.severity} → Priority ${priority}`);
     }
+
+    // ========== 获取优先级配置 ==========
+    const config = getPriorityConfig(priority, classification);
+    console.log(`[${config.log}] ${classification.title || 'Processing'}`);
+
+    // ========== 创建 GitHub Issue (P0, P1, P2 才创建) ==========
+    if (config.createTicket && classification.should_create_ticket) {
+      issue = await createGithubIssue({ classification, discordMessage: message });
+      console.log(`[GitHub] Created #${issue.number}`);
+    }
+
+    // ========== 钉钉通知 ==========
+    if (config.notify && classification.should_notify) {
+      await notifyDingTalk({ priority, classification, discordMessage: message, issue });
+      console.log(`[DingTalk] ${priority} notified`);
+    } else {
+      console.log(`[Skip] ${priority} no notification`);
+    }
+
   } catch (error) {
-    console.error(
-      "处理消息失败：",
-      error.response?.data ||
-        error.error ||
-        error.message ||
-        error
-    );
+    console.error("[Error]", error.response?.data || error.message);
   }
 });
 
-/**
- * Discord 客户端错误
- */
-discord.on("error", (error) => {
-  console.error("Discord 客户端错误：", error);
-});
+// 错误处理
+discord.on("error", console.error);
+process.on("unhandledRejection", console.error);
 
-/**
- * 未捕获 Promise 异常
- */
-process.on("unhandledRejection", (error) => {
-  console.error("未处理的 Promise 异常：", error);
-});
-
-/**
- * 未捕获同步异常
- */
-process.on("uncaughtException", (error) => {
-  console.error("未捕获异常：", error);
-});
-
-/**
- * 优雅退出
- */
-async function shutdown(signal) {
-  console.log(`收到 ${signal}，正在关闭 Discord Bot`);
-
-  try {
-    discord.destroy();
-  } catch (error) {
-    console.error("关闭 Discord Bot 失败：", error);
-  }
-
-  process.exit(0);
-}
-
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT", () => shutdown("SIGINT"));
-
-/**
- * 登录 Discord
- */
-discord.login(process.env.DISCORD_TOKEN).catch((error) => {
-  console.error("Discord 登录失败：", error);
-  process.exit(1);
-});
+discord.login(process.env.DISCORD_TOKEN);
