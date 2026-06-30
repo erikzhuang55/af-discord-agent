@@ -14,7 +14,6 @@ const {
  */
 const requiredEnv = [
   "DISCORD_TOKEN",
-  "DISCORD_FAQ_CHANNEL_ID",
   "ZHIPU_API_KEY",
   "ZHIPU_MODEL",
   "DINGTALK_WEBHOOK",
@@ -28,6 +27,24 @@ for (const key of requiredEnv) {
     throw new Error(`缺少环境变量：${key}`);
   }
 }
+
+/**
+ * 解析监听的 Discord 频道列表（支持多个，逗号分隔）
+ */
+const CHANNEL_IDS = new Set(
+  (process.env.DISCORD_CHANNEL_IDS || process.env.DISCORD_FAQ_CHANNEL_ID || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+);
+
+if (CHANNEL_IDS.size === 0) {
+  throw new Error(
+    "请配置 DISCORD_CHANNEL_IDS 环境变量，例如：123456789,987654321"
+  );
+}
+
+console.log(`[启动] 监听 ${CHANNEL_IDS.size} 个频道`);
 
 /**
  * 智谱 AI 客户端
@@ -372,11 +389,9 @@ ${discordMessage.url}
 /**
  * Discord Bot 上线
  */
-discord.once("clientReady", () => {
+discord.once("ready", () => {
   console.log(`Discord Bot 已上线：${discord.user.tag}`);
-  console.log(
-    `正在监听频道 ID：${process.env.DISCORD_FAQ_CHANNEL_ID}`
-  );
+  console.log(`正在监听 ${CHANNEL_IDS.size} 个频道：`, [...CHANNEL_IDS]);
 });
 
 /**
@@ -386,11 +401,10 @@ discord.on("messageCreate", async (message) => {
   // 忽略机器人消息，防止循环
   if (message.author.bot) return;
 
-  // 只监听指定的 FAQ 频道
-  if (
-    message.channel.id !==
-    process.env.DISCORD_FAQ_CHANNEL_ID
-  ) {
+  // 检查是否在监听的频道列表中
+  if (!CHANNEL_IDS.has(message.channel.id)) {
+    // 可选：调试时取消注释下面这行
+    // console.log(`[跳过] 频道不在监听列表: ${message.channel.name} (${message.channel.id})`);
     return;
   }
 
@@ -400,7 +414,7 @@ discord.on("messageCreate", async (message) => {
   if (!content) return;
 
   console.log(
-    `收到消息：${message.author.tag}：${content}`
+    `[${message.channel.name}] 收到消息：${message.author.tag}：${content.slice(0, 100)}${content.length > 100 ? "..." : ""}`
   );
 
   try {
