@@ -149,58 +149,70 @@ async function classifyMessage(messageText) {
       {
         role: "system",
         content: `
-你是一个软件产品的用户反馈分拣助手。
+You are a user feedback classifier for a software product.
 
-请把 Discord 用户消息分类为以下一种：
+Classify Discord user messages into one of these categories:
 
-bug
-feature_request
-question
-complaint
-account
-payment
-noise
+- bug
+- feature_request
+- question
+- complaint
+- account
+- payment
+- noise
 
-严重程度只能是：
+Severity levels (only these):
 
-low
-medium
-high
-critical
+- low
+- medium
+- high
+- critical
 
-分类规则：
+Classification rules:
 
-1. 明确的软件异常、报错、崩溃、无法使用，归类为 bug。
-2. 明确提出新增功能或优化建议，归类为 feature_request。
-3. 单纯询问产品如何使用，归类为 question。
-4. 明显表达不满，但没有具体故障，归类为 complaint。
-5. 登录、账号、权限、验证码相关问题，归类为 account。
-6. 付费、订阅、扣费、退款相关问题，归类为 payment。
-7. 闲聊、表情、测试消息、无意义内容，归类为 noise。
+1. Bug: Software errors, crashes, failures, or inability to use features.
+2. Feature Request: Explicit requests for new features or improvements.
+3. Question: Asking how to use the product.
+4. Complaint: Expressing dissatisfaction without specific technical failures.
+5. Account: Login issues, authentication, permissions, verification codes.
+6. Payment: Billing, subscriptions, refunds, payment failures.
+7. Noise: Chitchat, emojis, test messages, meaningless content.
 
-严重程度规则：
+Severity guidelines:
 
-- low：影响轻微，有替代方案。
-- medium：影响正常使用，但不是核心功能全面不可用。
-- high：核心功能不可用、影响较大。
-- critical：数据丢失、安全问题、大范围服务不可用。
+- low: Minor impact, workarounds available.
+- medium: Affects normal use but not completely blocking.
+- high: Core features unavailable, significant impact.
+- critical: Data loss, security issues, widespread service outage.
 
-创建工单规则：
+Ticket creation rules (GitHub Issue):
 
-- bug：创建
-- feature_request：创建
-- account：创建
-- payment：创建
-- complaint：仅 medium、high 或 critical 创建
-- question：不创建
-- noise：不创建
+- bug: CREATE
+- feature_request: CREATE
+- account: CREATE
+- payment: CREATE
+- complaint: CREATE only if medium/high/critical
+- question: DO NOT create
+- noise: DO NOT create
 
-钉钉播报规则：
+DingTalk notification rules:
 
-- noise：不播报
-- 其他类别：播报
+- noise: DO NOT notify
+- contact_request: NOTIFY (handled separately before this classification)
+- all others: NOTIFY
 
-只返回合法 JSON，不要添加 Markdown，不要添加解释，不要使用代码块。
+Output format:
+Return only valid JSON. Do not use markdown code blocks. No explanations.
+
+Example response:
+{
+  "category": "bug",
+  "severity": "high",
+  "title": "Short English summary for GitHub issue title",
+  "summary": "One sentence summarizing the user feedback",
+  "should_notify": true,
+  "should_create_ticket": true
+}
 
 返回格式：
 
@@ -418,36 +430,41 @@ discord.on("messageCreate", async (message) => {
   );
 
   /**
-   * 敏感词检测：联系方式请求
-   * 这类消息代表高意向客户，必须人工介入，优先级 P0
+   * Keyword detection: contact requests
+   * These indicate high-intent customers requiring human attention, P0 priority
    */
   const contactKeywords = [
-    /(?:dm|私信|私聊)\s*(?:我)?/i,           // "dm我", "私信我", "私聊"
-    /加我\s*(?:微信|好友|line|qq|电报)?/i,   // "加我", "加我微信"
-    /联系我|找我|发邮件给我|reach\s*out/i,   // "联系我", "找我"
-    /(?:我的|添加我的?)\s*(?:微信|line|telegram|tg)/i,  // "我的微信", "添加我的微信"
+    /\bdm\s*me\b/i,                           // "dm me", "DM me"
+    /\bmessage\s*me\b/i,                      // "message me"
+    /\bcontact\s*me\b/i,                      // "contact me"
+    /\breach\s*out\b/i,                       // "reach out", "reach out to me"
+    /\bping\s*me\b/i,                         // "ping me"
+    /\bslide\s*into\s*my\s*dms?\b/i,          // "slide into my dm"
+    /\badd\s*me\s*on\b/i,                     // "add me on discord/telegram"
+    /\bmy\s+(?:discord|telegram|tg|whatsapp|line)\s+is\b/i,  // "my discord is xxx"
+    /\b(let['']?s\s+)?(move|take)\s+this\s+(to\s+)?(dm|pm|private)\b/i,  // "let's move this to dm"
   ];
 
   const isContactRequest = contactKeywords.some(pattern => pattern.test(content));
 
   if (isContactRequest) {
-    console.log("[关键词触发] 检测到联系方式请求，强制推送钉钉（高优先级）");
+    console.log("[KEYWORD MATCH] Contact request detected, forcing DingTalk notification (P0 priority)");
 
     await notifyDingTalk({
       classification: {
         category: "contact_request",
         severity: "high",
-        title: "用户要求私下联系（需人工介入）",
+        title: "User requests private contact (human attention required)",
         summary: content,
         should_notify: true,
-        should_create_ticket: false,  // 不创建工单，但需要人工处理
+        should_create_ticket: false,  // Human handling preferred over GitHub issue
       },
       discordMessage: message,
       issue: null,
     });
 
-    console.log("已同步到钉钉 [contact_request]");
-    return; // 跳过后续 AI 分类，直接处理完毕
+    console.log("Synced to DingTalk [contact_request]");
+    return; // Skip AI classification to avoid misclassification as noise
   }
 
   try {
