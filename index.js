@@ -469,6 +469,9 @@ discord.on("messageCreate", async (message) => {
    */
   const contactKeywords = [
     /\bdm\s*me\b/i,                           // "dm me", "DM me"
+    /\bcheck\s+(?:dm|pm|private)\b/i,         // "check dm", "check pm"
+    /\bdm\s*(?:plz|please)\b/i,               // "dm plz", "dm please"
+    /\b(?:plz|please)\s*dm\b/i,               // "plz dm", "please dm"
     /\bmessage\s*me\b/i,                      // "message me"
     /\bcontact\s*me\b/i,                      // "contact me"
     /\breach\s*out\b/i,                       // "reach out", "reach out to me"
@@ -477,6 +480,10 @@ discord.on("messageCreate", async (message) => {
     /\badd\s*me\s*on\b/i,                     // "add me on discord/telegram"
     /\bmy\s+(?:discord|telegram|tg|whatsapp|line)\s+is\b/i,  // "my discord is xxx"
     /\b(let['']?s\s+)?(move|take)\s+this\s+(to\s+)?(dm|pm|private)\b/i,  // "let's move this to dm"
+    /\bemail\s*me\b/i,                        // "email me"
+    /\bsend\s+(?:me\s+)?(?:an\s+)?email\b/i,  // "send me an email", "send email"
+    /\btext\s*me\b/i,                         // "text me"
+    /\bcall\s*me\b/i,                         // "call me"
   ];
 
   const isContactRequest = contactKeywords.some(pattern => pattern.test(content));
