@@ -39,7 +39,7 @@ if (CHANNEL_IDS.size === 0) {
   throw new Error("Please configure DISCORD_CHANNEL_IDS, e.g.: 123,456,789");
 }
 
-console.log(`[Start] Monitoring ${CHANNEL_IDS.size} channels`);
+console.log(`[启动] 监听 ${CHANNEL_IDS.size} 个频道:`, [...CHANNEL_IDS]);
 
 /**
  * 例外用户列表（始终处理，即使管理员）
@@ -403,7 +403,7 @@ async function createGithubIssue({ classification, discordMessage }) {
     });
     return result.data;
   } catch (error) {
-    console.warn("GitHub issue creation failed, retrying without labels:", error.message);
+    console.warn("[GitHub] 创建Issue失败，尝试不带标签重试:", error.message);
     const fallback = await github.issues.create({
       owner: process.env.GITHUB_OWNER,
       repo: process.env.GITHUB_REPO,
@@ -436,32 +436,51 @@ function buildSignedDingTalkUrl() {
  * 钉钉通知（带优先级前缀）
  */
 async function notifyDingTalk({ priority, classification, discordMessage, issue }) {
-  const prefix = priority === 'P0' ? '🚨【P0紧急】' :
-                 priority === 'P1' ? '⚠️【P1高优】' :
-                 priority === 'P2' ? '【P2普通】' :
-                 priority === 'P3' ? '【P3汇总】' : '';
+  const prefixMap = {
+    'P0': '🚨【P0紧急】',
+    'P1': '⚠️【P1高优】',
+    'P2': '【P2普通】',
+    'P3': '【P3汇总】'
+  };
+  const prefix = prefixMap[priority] || '';
+
+  const categoryName = {
+    'contact': '📱 联系方式',
+    'payment': '💰 支付问题',
+    'account': '🔐 账号安全',
+    'crash': '💥 崩溃故障',
+    'bug': '🐛 Bug',
+    'feature_request': '✨ 功能建议',
+    'complaint': '😤 用户投诉',
+    'question': '❓ 使用问题',
+    'noise': '🔇 噪音'
+  }[classification.category] || classification.category;
+
+  const severityName = {
+    'critical': '致命',
+    'high': '高',
+    'medium': '中',
+    'low': '低'
+  }[classification.severity] || classification.severity;
 
   const issueText = issue
-    ? `GitHub: #${issue.number} ${issue.html_url}`
-    : "Ticket: Not created";
+    ? `📋 GitHub工单: #${issue.number}\n${issue.html_url}`
+    : "📋 工单: 未创建";
 
   const text = `
-${prefix} ${classification.category.toUpperCase()}
+${prefix} ${categoryName}
 
-Severity: ${classification.severity}
-User: ${discordMessage.author.tag}
-Channel: #${discordMessage.channel.name}
+👤 用户: ${discordMessage.author.tag}
+📢 严重程度: ${severityName}
+💬 摘要: ${classification.summary}
 
-Summary:
-${classification.summary}
-
-Original:
-${discordMessage.content.slice(0, 200)}${discordMessage.content.length > 200 ? "..." : ""}
+📝 原始消息:
+${discordMessage.content.slice(0, 300)}${discordMessage.content.length > 300 ? "..." : ""}
 
 ${issueText}
 
-Source: ${discordMessage.url}
-  `.trim();
+🔗 Discord原消息: ${discordMessage.url}
+`.trim();
 
   const response = await axios.post(
     buildSignedDingTalkUrl(),
@@ -470,7 +489,7 @@ Source: ${discordMessage.url}
   );
 
   if (response.data?.errcode !== 0) {
-    throw new Error(`DingTalk error: ${response.data?.errmsg}`);
+    throw new Error(`钉钉发送失败: ${response.data?.errmsg}`);
   }
   return response.data;
 }
@@ -479,8 +498,8 @@ Source: ${discordMessage.url}
  * Discord Bot 启动
  */
 discord.once("ready", () => {
-  console.log(`Discord Bot ready: ${discord.user.tag}`);
-  console.log(`Monitoring ${CHANNEL_IDS.size} channels:`, [...CHANNEL_IDS]);
+  console.log(`[启动成功] Discord Bot 已上线: ${discord.user.tag}`);
+  console.log(`[配置] 监听 ${CHANNEL_IDS.size} 个频道:`, [...CHANNEL_IDS]);
 });
 
 /**
@@ -500,17 +519,17 @@ discord.on("messageCreate", async (message) => {
   if (!isException) {
     const member = message.member;
     if (member?.roles.cache.some(r => STAFF_ROLE_NAMES.includes(r.name))) {
-      console.log(`[Skip] Staff message | ${message.author.tag} | ${userId}`);
+      console.log(`[跳过] 管理员消息 | ${message.author.tag} | ${userId}`);
       return;
     }
   } else {
-    console.log(`[Override] Exception user | ${message.author.tag} | ${userId}`);
+    console.log(`[例外] 例外用户处理 | ${message.author.tag} | ${userId}`);
   }
 
   const content = message.content.trim();
   if (!content) return;
 
-  console.log(`[${message.channel.name}] ${message.author.tag}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
+  console.log(`[${message.channel.name}] 收到: ${message.author.tag}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
 
   try {
     let classification;
@@ -521,7 +540,7 @@ discord.on("messageCreate", async (message) => {
     const p0Result = detectP0Keywords(content);
 
     if (p0Result) {
-      console.log(`[P0 Keyword Detected] Type: ${p0Result.type}`);
+      console.log(`[P0检测] 类型: ${p0Result.type === 'contact' ? '联系方式' : p0Result.type === 'payment' ? '支付问题' : p0Result.type === 'account' ? '账号安全' : '崩溃故障'}`);
 
       priority = 'P0';
       classification = {
@@ -543,7 +562,7 @@ discord.on("messageCreate", async (message) => {
       // ========== 第三层：映射优先级 ==========
       priority = mapToPriority(classification.category, classification.severity);
 
-      console.log(`[AI Result] ${classification.category} | ${classification.severity} → Priority ${priority}`);
+      console.log(`[AI分类] ${classification.category} | ${classification.severity} → Priority ${priority}`);
     }
 
     // ========== 获取优先级配置 ==========
