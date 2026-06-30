@@ -448,23 +448,23 @@ discord.on("messageCreate", async (message) => {
   const isContactRequest = contactKeywords.some(pattern => pattern.test(content));
 
   if (isContactRequest) {
-    console.log("[KEYWORD MATCH] Contact request detected, forcing DingTalk notification (P0 priority)");
+    console.log("[关键词匹配] 检测到联系方式请求，强制推送钉钉（P0 高优先级）");
 
     await notifyDingTalk({
       classification: {
         category: "contact_request",
         severity: "high",
-        title: "User requests private contact (human attention required)",
+        title: "🔥 用户要求私下联系（需人工立即介入）",
         summary: content,
         should_notify: true,
-        should_create_ticket: false,  // Human handling preferred over GitHub issue
+        should_create_ticket: false,  // 人工处理优先于 GitHub Issue
       },
       discordMessage: message,
       issue: null,
     });
 
-    console.log("Synced to DingTalk [contact_request]");
-    return; // Skip AI classification to avoid misclassification as noise
+    console.log("已同步到钉钉 [contact_request]");
+    return; // 跳过 AI 分类，避免误判为 noise
   }
 
   try {
