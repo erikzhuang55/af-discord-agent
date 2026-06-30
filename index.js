@@ -420,6 +420,19 @@ discord.on("messageCreate", async (message) => {
     return;
   }
 
+  // 检查用户角色：管理员/版主的消息不处理（内部回复）
+  const member = message.member;
+  if (member) {
+    const isStaff = member.roles.cache.some(role =>
+      ['Admin', 'Administrator', 'Moderator', 'Mod', 'Staff', 'Team', '管理员', '版主'].includes(role.name)
+    );
+
+    if (isStaff) {
+      console.log(`[跳过] 管理员/版主消息: ${message.author.tag}`);
+      return;
+    }
+  }
+
   const content = message.content.trim();
 
   // 忽略空消息
