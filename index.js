@@ -257,7 +257,7 @@ Discord 原消息：
 ${discordMessage.url}
   `.trim();
 
-  await axios.post(
+  const response = await axios.post(
     buildSignedDingTalkUrl(),
     {
       msgtype: "text",
@@ -272,54 +272,14 @@ ${discordMessage.url}
       },
     }
   );
-}
 
-discord.once("ready", () => {
-  console.log(`Discord Bot 已上线：${discord.user.tag}`);
-  console.log(`正在监听频道 ID：${process.env.DISCORD_FAQ_CHANNEL_ID}`);
-});
+  console.log("钉钉返回结果：", response.data);
 
-discord.on("messageCreate", async (message) => {
-  if (message.author.bot) return;
-  if (message.channel.id !== process.env.DISCORD_FAQ_CHANNEL_ID) return;
-
-  const content = message.content.trim();
-
-  if (!content) return;
-
-  console.log(`收到消息：${message.author.tag}：${content}`);
-
-  try {
-    const classification = await classifyMessage(content);
-
-    console.log("AI 分类结果：", classification);
-
-    let issue = null;
-
-    if (classification.should_create_ticket) {
-      issue = await createGithubIssue({
-        classification,
-        discordMessage: message,
-      });
-
-      console.log(`已创建 GitHub Issue：${issue.html_url}`);
-    }
-
-    if (classification.should_notify) {
-      await notifyDingTalk({
-        classification,
-        discordMessage: message,
-        issue,
-      });
-
-      console.log("已同步到钉钉");
-    }
-  } catch (error) {
-    console.error(
-      "处理失败：",
-      error.response?.data || error.message || error
+  if (response.data?.errcode !== 0) {
+    throw new Error(
+      `钉钉发送失败：${response.data?.errcode} ${response.data?.errmsg}`
     );
   }
-});
 
-discord.login(process.env.DISCORD_TOKEN);
+  return response.data;
+}
