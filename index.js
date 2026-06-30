@@ -302,12 +302,14 @@ Categories:
 - contact_request: Private contact requests (severity: high)
 - noise: Spam, emojis, tests
 
-Return JSON:
+IMPORTANT: 用户主要使用中文，所有输出必须是中文。
+
+返回 JSON（所有字符串值为中文）：
 {
   "category": "string",
   "severity": "low|medium|high|critical",
-  "title": "English summary for GitHub issue title",
-  "summary": "One sentence summary",
+  "title": "简短中文标题，概括核心问题（20字以内）",
+  "summary": "一句话中文摘要，说明用户反馈内容",
   "should_notify": true,
   "should_create_ticket": true
 }`.trim()
@@ -326,7 +328,7 @@ Return JSON:
   // P0 兜底：含 contact 关键词但 AI 没判对
   if (/\b(dm|pm|email|contact|message me|ping me)\b/i.test(messageText) &&
       (parsed.category === 'noise' || parsed.category === 'question')) {
-    console.log("[P0 Override] Contact keywords detected, forcing contact_request");
+    console.log("[P0兜底] 检测到联系方式关键词，强制修正为 contact_request");
     parsed = {
       category: "contact_request",
       severity: "high",
