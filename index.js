@@ -42,6 +42,50 @@ if (CHANNEL_IDS.size === 0) {
 console.log(`[启动] 监听 ${CHANNEL_IDS.size} 个频道:`, [...CHANNEL_IDS]);
 
 /**
+ * Ticket 配置
+ */
+const TICKET_CHANNEL_ID = process.env.DISCORD_TICKET_CHANNEL_ID;
+if (TICKET_CHANNEL_ID) {
+  console.log(`[启动] Ticket 频道: ${TICKET_CHANNEL_ID}`);
+}
+
+const REPLIED_TICKETS_FILE = process.env.REPLIED_TICKETS_FILE || ".replied_tickets.json";
+
+/**
+ * 加载已回复的 Ticket 列表
+ */
+function loadRepliedTickets() {
+  try {
+    const fs = require("fs");
+    if (fs.existsSync(REPLIED_TICKETS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(REPLIED_TICKETS_FILE, "utf-8"));
+      console.log(`[启动] 加载 ${data.length} 个已回复 Ticket`);
+      return new Set(data);
+    }
+  } catch (err) {
+    console.error("[启动] 加载已回复 Ticket 失败:", err.message);
+  }
+  return new Set();
+}
+
+/**
+ * 保存已回复的 Ticket 列表
+ */
+function saveRepliedTickets() {
+  try {
+    const fs = require("fs");
+    fs.writeFileSync(
+      REPLIED_TICKETS_FILE,
+      JSON.stringify([...repliedTickets], null, 2)
+    );
+  } catch (err) {
+    console.error("[保存] 写入已回复 Ticket 失败:", err.message);
+  }
+}
+
+const repliedTickets = loadRepliedTickets();
+
+/**
  * 例外用户列表（始终处理，即使管理员）
  */
 const EXCEPTION_USER_IDS = new Set([
@@ -437,7 +481,7 @@ function buildSignedDingTalkUrl() {
 /**
  * 钉钉通知（带优先级前缀）
  */
-async function notifyDingTalk({ priority, classification, discordMessage, issue }) {
+async function notifyDingTalk({ priority, classification, discordMessage, issue, ticketReplySent = false }) {
   const prefixMap = {
     'P0': '🚨【P0紧急】',
     'P1': '⚠️【P1高优】',
@@ -469,12 +513,17 @@ async function notifyDingTalk({ priority, classification, discordMessage, issue 
     ? `📋 GitHub工单: #${issue.number}\n${issue.html_url}`
     : "📋 工单: 未创建";
 
+  const ticketText = ticketReplySent
+    ? `✅ 已自动回复用户 (Ticket)`
+    : (discordMessage.channel.id === TICKET_CHANNEL_ID ? `⏳ Ticket待处理` : "");
+
   const text = `
 ${prefix} ${categoryName}
 
 👤 用户: ${discordMessage.author.tag}
 📢 严重程度: ${severityName}
 💬 摘要: ${classification.summary}
+${ticketText ? `\n🎫 ${ticketText}` : ""}
 
 📝 原始消息:
 ${discordMessage.content.slice(0, 300)}${discordMessage.content.length > 300 ? "..." : ""}
@@ -494,6 +543,136 @@ ${issueText}
     throw new Error(`钉钉发送失败: ${response.data?.errmsg}`);
   }
   return response.data;
+}
+
+/**
+ * Ticket 自动回复模板（Discord Embed 风格）
+ */
+const TICKET_REPLY_TEMPLATES = {
+  bug: {
+    color: 0xED4245, // Red
+    title: "🐛 Issue Received",
+    description: "We've logged your bug report. Our team will investigate and follow up if more details are needed.",
+    fields: [
+      { name: "📋 What happens next?", value: "We'll review and may request screenshots or steps to reproduce.", inline: false },
+      { name: "⏱️ Response Time", value: "Usually within 24-48 hours", inline: true }
+    ]
+  },
+  payment: {
+    color: 0xFEE75C, // Yellow
+    title: "💰 Payment Issue Noted",
+    description: "Your payment-related inquiry has been received. For security, avoid sharing sensitive details here.",
+    fields: [
+      { name: "🔒 Security Note", value: "Staff will never ask for your password or private keys.", inline: false },
+      { name: "⏱️ Response Time", value: "Within 12-24 hours", inline: true }
+    ]
+  },
+  account: {
+    color: 0xF04747, // Orange-Red
+    title: "🔐 Account Issue Logged",
+    description: "We've received your account security report. This type of request is prioritized.",
+    fields: [
+      { name: "🚨 Important", value: "If your account is compromised, also check your email for any unauthorized changes.", inline: false },
+      { name: "⏱️ Response Time", value: "As soon as possible", inline: true }
+    ]
+  },
+  crash: {
+    color: 0xED4245, // Red
+    title: "💥 Critical Issue Reported",
+    description: "Your crash/ service disruption report has been flagged for immediate attention.",
+    fields: [
+      { name: "📊 System Status", value: "Check [status page](https://status.example.com) for known incidents", inline: false },
+      { name: "⏱️ Response Time", value: "Within 2-4 hours", inline: true }
+    ]
+  },
+  feature_request: {
+    color: 0x5865F2, // Blurple
+    title: "✨ Suggestion Recorded",
+    description: "Thanks for sharing your idea! We regularly review feature requests to guide our roadmap.",
+    fields: [
+      { name: "💡 Pro Tip", value: "Upvote existing requests on our [feedback board](https://feedback.example.com)", inline: false },
+      { name: "⏱️ Updates", value: "Quarterly roadmap reviews", inline: true }
+    ]
+  },
+  question: {
+    color: 0x57F287, // Green
+    title: "❓ Question Received",
+    description: "We've got your question. Here's where to find answers while you wait:",
+    fields: [
+      { name: "📚 Resources", value: "[Documentation](https://docs.example.com) • [FAQ](https://faq.example.com)", inline: false },
+      { name: "⏱️ Response Time", value: "Usually 24-48 hours", inline: true }
+    ]
+  },
+  complaint: {
+    color: 0xEB459E, // Pink
+    title: "😤 Feedback Noted",
+    description: "We're sorry to hear about your experience. Your feedback helps us improve.",
+    fields: [
+      { name: "📢 What's next?", value: "A team member will review and reach out to understand your concerns better.", inline: false },
+      { name: "⏱️ Response Time", value: "Within 24 hours", inline: true }
+    ]
+  },
+  contact_request: {
+    color: 0x23272A, // Dark
+    title: "📱 Contact Request Logged",
+    description: "We received your request for direct contact. A team member will reach out to you shortly.",
+    fields: [
+      { name: "📩 Note", value: "Please keep an eye on your DMs and email for our message.", inline: false },
+      { name: "⏱️ Response Time", value: "Within 6-12 hours", inline: true }
+    ]
+  },
+  default: {
+    color: 0x5865F2,
+    title: "📨 Ticket Received",
+    description: "Your message has been received. Our support team will review and respond shortly.",
+    fields: [
+      { name: "👍 Thanks for your patience!", value: "No further action needed from you at this time.", inline: false }
+    ]
+  }
+};
+
+/**
+ * 发送 Ticket 自动回复
+ * @param {Message} message - Discord 消息对象
+ * @param {Object} classification - AI 分类结果
+ * @returns {Promise<boolean>} 是否成功发送
+ */
+async function sendTicketAutoReply(message, classification) {
+  if (!TICKET_CHANNEL_ID || message.channel.id !== TICKET_CHANNEL_ID) {
+    return false;
+  }
+
+  // 检查是否已回复过
+  if (repliedTickets.has(message.channel.id)) {
+    return false;
+  }
+
+  const template = TICKET_REPLY_TEMPLATES[classification.category] || TICKET_REPLY_TEMPLATES.default;
+
+  const embed = {
+    color: template.color,
+    title: template.title,
+    description: template.description,
+    fields: [
+      ...template.fields,
+      { name: "​", value: `Ticket ID: \`${message.channel.id.slice(-8)}\``, inline: false }
+    ],
+    footer: {
+      text: "This is an automated response. A staff member will reply soon."
+    },
+    timestamp: new Date().toISOString()
+  };
+
+  try {
+    await message.channel.send({ embeds: [embed] });
+    repliedTickets.add(message.channel.id);
+    saveRepliedTickets();
+    console.log(`[Ticket] 已发送自动回复 | Channel: ${message.channel.id} | Category: ${classification.category}`);
+    return true;
+  } catch (err) {
+    console.error(`[Ticket] 发送自动回复失败:`, err.message);
+    return false;
+  }
 }
 
 /**
@@ -577,10 +756,16 @@ discord.on("messageCreate", async (message) => {
       console.log(`[GitHub] Created #${issue.number}`);
     }
 
+    // ========== Ticket 自动回复 ==========
+    let ticketReplySent = false;
+    if (message.channel.id === TICKET_CHANNEL_ID) {
+      ticketReplySent = await sendTicketAutoReply(message, classification);
+    }
+
     // ========== 钉钉通知 ==========
     if (config.notify && classification.should_notify) {
-      await notifyDingTalk({ priority, classification, discordMessage: message, issue });
-      console.log(`[DingTalk] ${priority} notified`);
+      await notifyDingTalk({ priority, classification, discordMessage: message, issue, ticketReplySent });
+      console.log(`[DingTalk] ${priority} notified${ticketReplySent ? " (含Ticket状态)" : ""}`);
     } else {
       console.log(`[Skip] ${priority} no notification`);
     }

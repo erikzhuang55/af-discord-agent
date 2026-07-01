@@ -63,3 +63,6 @@ test-results/
 config.json.bak
 data/
 cache/
+
+# Ticket replied state
+.replied_tickets.json
