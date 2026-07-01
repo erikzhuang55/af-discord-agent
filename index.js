@@ -42,11 +42,13 @@ if (CHANNEL_IDS.size === 0) {
 console.log(`[启动] 监听 ${CHANNEL_IDS.size} 个频道:`, [...CHANNEL_IDS]);
 
 /**
- * Ticket 配置（兼容 DISCORD_FAQ_CHANNEL_ID）
+ * Ticket Category 配置
+ * 注意：这是 Category ID（分类ID），不是 Channel ID
+ * Ticket Tools 会在此分类下动态创建频道
  */
-const TICKET_CHANNEL_ID = process.env.DISCORD_TICKET_CHANNEL_ID || process.env.DISCORD_FAQ_CHANNEL_ID?.split(",")[1]?.trim();
-if (TICKET_CHANNEL_ID) {
-  console.log(`[启动] Ticket 频道: ${TICKET_CHANNEL_ID}`);
+const TICKET_CATEGORY_ID = process.env.DISCORD_TICKET_CATEGORY_ID;
+if (TICKET_CATEGORY_ID) {
+  console.log(`[启动] Ticket 分类: ${TICKET_CATEGORY_ID}`);
 }
 
 const REPLIED_TICKETS_FILE = process.env.REPLIED_TICKETS_FILE || ".replied_tickets.json";
@@ -513,9 +515,10 @@ async function notifyDingTalk({ priority, classification, discordMessage, issue,
     ? `📋 GitHub工单: #${issue.number}\n${issue.html_url}`
     : "📋 工单: 未创建";
 
+  const isTicketChannel = TICKET_CATEGORY_ID && discordMessage.channel.parentId === TICKET_CATEGORY_ID;
   const ticketText = ticketReplySent
     ? `✅ 已自动回复用户 (Ticket)`
-    : (discordMessage.channel.id === TICKET_CHANNEL_ID ? `⏳ Ticket待处理` : "");
+    : (isTicketChannel ? `⏳ Ticket待处理` : "");
 
   const text = `
 ${prefix} ${categoryName}
@@ -638,7 +641,8 @@ const TICKET_REPLY_TEMPLATES = {
  * @returns {Promise<boolean>} 是否成功发送
  */
 async function sendTicketAutoReply(message, classification) {
-  if (!TICKET_CHANNEL_ID || message.channel.id !== TICKET_CHANNEL_ID) {
+  // 检查是否属于 Ticket 分类（使用 parentId 检测）
+  if (!TICKET_CATEGORY_ID || message.channel.parentId !== TICKET_CATEGORY_ID) {
     return false;
   }
 
@@ -758,7 +762,7 @@ discord.on("messageCreate", async (message) => {
 
     // ========== Ticket 自动回复 ==========
     let ticketReplySent = false;
-    if (message.channel.id === TICKET_CHANNEL_ID) {
+    if (TICKET_CATEGORY_ID && message.channel.parentId === TICKET_CATEGORY_ID) {
       ticketReplySent = await sendTicketAutoReply(message, classification);
     }
 
