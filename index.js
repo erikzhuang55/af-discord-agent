@@ -674,7 +674,21 @@ async function sendTicketAutoReply(message, classification) {
     console.log(`[Ticket] 已发送自动回复 | Channel: ${message.channel.id} | Category: ${classification.category}`);
     return true;
   } catch (err) {
-    console.error(`[Ticket] 发送自动回复失败:`, err.message);
+    const errCode = err.code;
+    const errDetail = err.rawError || {};
+    const missingPerms = errDetail.permission ? `缺少权限: ${errDetail.permission}` : '';
+    const missingPermsArr = errDetail.permissions ? `缺少权限列表: ${errDetail.permissions.join(', ')}` : '';
+
+    console.error(`[Ticket] 发送自动回复失败:`);
+    console.error(`  - 错误码: ${errCode}`);
+    console.error(`  - 错误信息: ${err.message}`);
+    if (missingPerms) console.error(`  - ${missingPerms}`);
+    if (missingPermsArr) console.error(`  - ${missingPermsArr}`);
+    console.error(`  - 频道ID: ${message.channel.id}`);
+    console.error(`  - 频道名: ${message.channel.name}`);
+    console.error(`  - 是否私信: ${message.channel.isDMBased?.() || false}`);
+    console.error(`  - Bot在该频道的权限值: ${message.guild?.members.me?.permissionsIn(message.channel)?.bitfield || 'N/A'}`);
+
     return false;
   }
 }
