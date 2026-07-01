@@ -694,8 +694,11 @@ discord.on("messageCreate", async (message) => {
   // 忽略机器人
   if (message.author.bot) return;
 
-  // 频道过滤
-  if (!CHANNEL_IDS.has(message.channel.id)) return;
+  // 检查是否属于 Ticket 分类
+  const isTicketChannel = TICKET_CATEGORY_ID && message.channel.parentId === TICKET_CATEGORY_ID;
+
+  // 频道过滤：监听列表中的频道 或 Ticket 分类下的频道
+  if (!CHANNEL_IDS.has(message.channel.id) && !isTicketChannel) return;
 
   const userId = message.author.id;
   const isException = EXCEPTION_USER_IDS.has(userId);
@@ -714,7 +717,8 @@ discord.on("messageCreate", async (message) => {
   const content = message.content.trim();
   if (!content) return;
 
-  console.log(`[${message.channel.name}] 收到: ${message.author.tag}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
+  const channelType = isTicketChannel ? "[Ticket]" : "[Channel]";
+  console.log(`${channelType}[${message.channel.name}] 收到: ${message.author.tag}: ${content.slice(0, 80)}${content.length > 80 ? "..." : ""}`);
 
   try {
     let classification;
