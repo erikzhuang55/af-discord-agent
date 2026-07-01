@@ -42,9 +42,9 @@ if (CHANNEL_IDS.size === 0) {
 console.log(`[启动] 监听 ${CHANNEL_IDS.size} 个频道:`, [...CHANNEL_IDS]);
 
 /**
- * Ticket 配置
+ * Ticket 配置（兼容 DISCORD_FAQ_CHANNEL_ID）
  */
-const TICKET_CHANNEL_ID = process.env.DISCORD_TICKET_CHANNEL_ID;
+const TICKET_CHANNEL_ID = process.env.DISCORD_TICKET_CHANNEL_ID || process.env.DISCORD_FAQ_CHANNEL_ID?.split(",")[1]?.trim();
 if (TICKET_CHANNEL_ID) {
   console.log(`[启动] Ticket 频道: ${TICKET_CHANNEL_ID}`);
 }
